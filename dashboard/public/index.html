@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🌱 Hệ Thống Tưới Cây</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* ── Gradient nền ── */
+    body { background: linear-gradient(135deg, #0f172a 0%, #134e4a 100%); min-height: 100vh; }
+
+    /* ── Card kính ── */
+    .glass {
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    /* ── Thanh độ ẩm ── */
+    #moisture-bar {
+      transition: width 0.8s ease, background-color 0.8s ease;
+    }
+
+    /* ── Đèn trạng thái bơm ── */
+    .pump-led {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      display: inline-block;
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.1);
+      flex-shrink: 0;
+    }
+    .pump-led.on  { background: #22c55e; box-shadow: 0 0 12px #22c55e, 0 0 3px rgba(255,255,255,0.1); animation: pulse-green 1.5s infinite; }
+    .pump-led.off { background: #475569; }
+
+    @keyframes pulse-green {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.5; }
+    }
+
+    /* ── Nút chế độ ── */
+    .mode-btn {
+      transition: all 0.2s ease;
+      cursor: pointer;
+      border: 2px solid transparent;
+    }
+    .mode-btn:hover:not(.active):not(:disabled) { transform: translateY(-2px); filter: brightness(1.15); }
+    .mode-btn:active { transform: scale(0.97); }
+    .mode-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .mode-btn.active  { border-color: white !important; box-shadow: 0 0 16px rgba(255,255,255,0.25); }
+
+    /* ── Spin icon khi loading ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+    /* ── Countdown ring ── */
+    .countdown-ring {
+      transition: stroke-dashoffset 1s linear;
+    }
+
+    /* ── Pulse đỏ khi lỗi ── */
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25%       { transform: translateX(-6px); }
+      75%       { transform: translateX(6px); }
+    }
+    .shake { animation: shake 0.4s ease; }
+  </style>
+</head>
+<body class="text-white font-sans p-4">
+
+  <!-- ══════════════════════════════════════════════════════
+       HEADER
+  ══════════════════════════════════════════════════════ -->
+  <header class="max-w-2xl mx-auto mb-6 text-center">
+    <h1 class="text-3xl font-bold tracking-tight">🌱 Hệ Thống Tưới Cây</h1>
+    <p class="text-slate-400 text-sm mt-1">Giám sát & Điều khiển qua ThingSpeak</p>
+  </header>
+
+  <main class="max-w-2xl mx-auto space-y-4">
+
+    <!-- ══════════════════════════════════════════════════
+         CARD: ĐỘ ẨM ĐẤT
+    ══════════════════════════════════════════════════ -->
+    <div class="glass rounded-2xl p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">💧</span>
+          <span class="font-semibold text-lg">Độ Ẩm Đất</span>
+        </div>
+        <span id="moisture-value" class="text-3xl font-bold tabular-nums">—</span>
+      </div>
+
+      <!-- Thanh tiến trình -->
+      <div class="w-full bg-slate-700 rounded-full h-4 overflow-hidden">
+        <div id="moisture-bar"
+             class="h-4 rounded-full bg-blue-500"
+             style="width: 0%">
+        </div>
+      </div>
+      <div class="flex justify-between text-xs text-slate-400 mt-1">
+        <span>Khô 0%</span>
+        <span>Ướt 100%</span>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
+         CARD: TRẠNG THÁI BƠM
+    ══════════════════════════════════════════════════ -->
+    <div class="glass rounded-2xl p-5">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="text-2xl">⚡</span>
+        <span class="font-semibold text-lg">Máy Bơm</span>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <!-- Trạng thái vật lý -->
+        <div class="bg-slate-800/60 rounded-xl p-4 flex flex-col items-center gap-2">
+          <span class="text-xs text-slate-400 uppercase tracking-wider">Trạng thái</span>
+          <div class="flex items-center gap-2">
+            <div id="pump-led" class="pump-led off"></div>
+            <span id="pump-status-text" class="font-bold text-lg">TẮT</span>
+          </div>
+        </div>
+
+        <!-- Chế độ hiện tại -->
+        <div class="bg-slate-800/60 rounded-xl p-4 flex flex-col items-center gap-2">
+          <span class="text-xs text-slate-400 uppercase tracking-wider">Chế độ</span>
+          <span id="pump-mode-badge"
+                class="px-3 py-1 rounded-full text-sm font-semibold bg-blue-600">
+            Tự động
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
+         CARD: ĐIỀU KHIỂN THỦ CÔNG
+    ══════════════════════════════════════════════════ -->
+    <div class="glass rounded-2xl p-5">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="text-2xl">🎛️</span>
+        <span class="font-semibold text-lg">Điều Khiển Thủ Công</span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3" id="mode-buttons">
+        <!-- Tự động -->
+        <button id="btn-auto"
+                class="mode-btn bg-blue-600 hover:bg-blue-500 rounded-xl py-4 flex flex-col items-center gap-2"
+                onclick="setMode(0)">
+          <span class="text-2xl">🔄</span>
+          <span class="text-sm font-semibold">Tự Động</span>
+          <span class="text-xs text-blue-200">theo độ ẩm</span>
+        </button>
+
+        <!-- Bật bơm -->
+        <button id="btn-on"
+                class="mode-btn bg-emerald-700 hover:bg-emerald-600 rounded-xl py-4 flex flex-col items-center gap-2"
+                onclick="setMode(1)">
+          <span class="text-2xl">💧</span>
+          <span class="text-sm font-semibold">Bật Bơm</span>
+          <span class="text-xs text-emerald-200">luôn chạy</span>
+        </button>
+
+        <!-- Tắt bơm -->
+        <button id="btn-off"
+                class="mode-btn bg-rose-700 hover:bg-rose-600 rounded-xl py-4 flex flex-col items-center gap-2"
+                onclick="setMode(2)">
+          <span class="text-2xl">⏹️</span>
+          <span class="text-sm font-semibold">Tắt Bơm</span>
+          <span class="text-xs text-rose-200">dừng toàn bộ</span>
+        </button>
+      </div>
+
+      <!-- Thông báo kết quả lệnh -->
+      <div id="cmd-result" class="mt-3 text-sm text-center min-h-[1.5rem]"></div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
+         FOOTER: THỜI GIAN & TỰ ĐỘNG LÀM MỚI
+    ══════════════════════════════════════════════════ -->
+    <div class="glass rounded-2xl p-4 flex items-center justify-between text-sm text-slate-400">
+      <div>
+        <span>🕐 Cập nhật lúc: </span>
+        <span id="updated-at" class="text-slate-300">—</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <!-- SVG countdown ring -->
+        <svg width="28" height="28" viewBox="0 0 28 28">
+          <circle cx="14" cy="14" r="11" fill="none" stroke="#334155" stroke-width="3"/>
+          <circle id="countdown-ring" cx="14" cy="14" r="11"
+                  fill="none" stroke="#38bdf8" stroke-width="3"
+                  stroke-dasharray="69.1" stroke-dashoffset="0"
+                  stroke-linecap="round"
+                  transform="rotate(-90 14 14)"
+                  class="countdown-ring"/>
+        </svg>
+        <span>Làm mới sau <span id="countdown-label" class="text-slate-300 font-bold">15</span>s</span>
+      </div>
+    </div>
+
+    <!-- Banner lỗi -->
+    <div id="error-banner"
+         class="hidden glass border border-rose-500/50 rounded-2xl p-4 text-rose-300 text-sm text-center">
+    </div>
+
+  </main>
+
+  <!-- ══════════════════════════════════════════════════════
+       JAVASCRIPT
+  ══════════════════════════════════════════════════════ -->
+  <script>
+    // ── Cấu hình ──────────────────────────────────────────
+    const REFRESH_INTERVAL = 15;   // giây — khớp với giới hạn ThingSpeak free
+    const CIRCUMFERENCE = 2 * Math.PI * 11; // ≈ 69.1
+
+    // ── State ──────────────────────────────────────────────
+    let currentMode = 0;
+    let countdown   = REFRESH_INTERVAL;
+    let countdownInterval = null;
+    let isSending   = false;
+
+    // ── DOM refs ───────────────────────────────────────────
+    const $moisture      = document.getElementById('moisture-value');
+    const $bar           = document.getElementById('moisture-bar');
+    const $pumpLed       = document.getElementById('pump-led');
+    const $pumpText      = document.getElementById('pump-status-text');
+    const $modeBadge     = document.getElementById('pump-mode-badge');
+    const $updatedAt     = document.getElementById('updated-at');
+    const $countdown     = document.getElementById('countdown-label');
+    const $ring          = document.getElementById('countdown-ring');
+    const $cmdResult     = document.getElementById('cmd-result');
+    const $errorBanner   = document.getElementById('error-banner');
+    const $buttons       = document.getElementById('mode-buttons');
+
+    // ══════════════════════════════════════════════════════
+    //  Cập nhật giao diện từ dữ liệu API
+    // ══════════════════════════════════════════════════════
+    function updateUI(data) {
+      // Ẩn banner lỗi
+      $errorBanner.classList.add('hidden');
+
+      // ── Độ ẩm ──
+      if (data.moisture !== null && data.moisture !== undefined) {
+        const pct = Math.round(data.moisture);
+        $moisture.textContent = `${pct}%`;
+        $bar.style.width = `${pct}%`;
+
+        // Màu thanh theo độ ẩm
+        if (pct < 30)       $bar.className = 'h-4 rounded-full bg-red-500 transition-all';
+        else if (pct < 60)  $bar.className = 'h-4 rounded-full bg-amber-400 transition-all';
+        else                $bar.className = 'h-4 rounded-full bg-emerald-500 transition-all';
+      } else {
+        $moisture.textContent = '—';
+        $bar.style.width = '0%';
+      }
+
+      // ── Trạng thái bơm ──
+      if (data.pumpRunning) {
+        $pumpLed.className  = 'pump-led on';
+        $pumpText.textContent = 'ĐANG CHẠY';
+        $pumpText.className   = 'font-bold text-lg text-emerald-400';
+      } else {
+        $pumpLed.className  = 'pump-led off';
+        $pumpText.textContent = 'TẮT';
+        $pumpText.className   = 'font-bold text-lg text-slate-400';
+      }
+
+      // ── Chế độ ──
+      currentMode = Number(data.pumpMode ?? 0);
+      const modeConfig = [
+        { label: '🔄 Tự Động',     cls: 'bg-blue-600' },
+        { label: '💧 Bật Thủ Công', cls: 'bg-emerald-600' },
+        { label: '⏹️ Tắt Thủ Công', cls: 'bg-rose-600' },
+      ];
+      const cfg = modeConfig[currentMode] || modeConfig[0];
+      $modeBadge.textContent = cfg.label;
+      $modeBadge.className   = `px-3 py-1 rounded-full text-sm font-semibold ${cfg.cls}`;
+
+      // Active button
+      ['btn-auto','btn-on','btn-off'].forEach((id, i) => {
+        const btn = document.getElementById(id);
+        if (i === currentMode) btn.classList.add('active');
+        else                   btn.classList.remove('active');
+      });
+
+      // ── Thời gian ──
+      if (data.updatedAt) {
+        const d = new Date(data.updatedAt);
+        $updatedAt.textContent = d.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+      } else {
+        $updatedAt.textContent = '—';
+      }
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Fetch trạng thái từ backend
+    // ══════════════════════════════════════════════════════
+    async function fetchStatus() {
+      try {
+        const res  = await fetch('/api/status');
+        const data = await res.json();
+
+        if (data.error) {
+          showError(data.error);
+          return;
+        }
+        updateUI(data);
+      } catch (err) {
+        showError('Không thể kết nối backend. Kiểm tra NestJS đang chạy.');
+      }
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Gửi lệnh đổi chế độ bơm
+    // ══════════════════════════════════════════════════════
+    async function setMode(mode) {
+      if (isSending) return;
+      isSending = true;
+      setButtonsDisabled(true);
+
+      // Hiện spinner
+      $cmdResult.innerHTML = '<span class="spin">⏳</span> Đang gửi lệnh...';
+      $cmdResult.className = 'mt-3 text-sm text-center min-h-[1.5rem] text-slate-300';
+
+      try {
+        const res  = await fetch('/api/pump/mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          $cmdResult.innerHTML = `✅ ${data.message}`;
+          $cmdResult.className = 'mt-3 text-sm text-center min-h-[1.5rem] text-emerald-400';
+
+          // Làm mới ngay sau 2 giây (chờ ESP32 ghi vào ThingSpeak)
+          setTimeout(() => {
+            resetCountdown();
+            fetchStatus();
+          }, 2000);
+        } else {
+          $cmdResult.innerHTML = `❌ ${data.message}`;
+          $cmdResult.className = 'mt-3 text-sm text-center min-h-[1.5rem] text-rose-400';
+          $buttons.classList.add('shake');
+          setTimeout(() => $buttons.classList.remove('shake'), 400);
+        }
+      } catch (err) {
+        $cmdResult.innerHTML = '❌ Lỗi kết nối tới backend';
+        $cmdResult.className = 'mt-3 text-sm text-center min-h-[1.5rem] text-rose-400';
+      } finally {
+        isSending = false;
+        setButtonsDisabled(false);
+        // Xóa thông báo sau 4 giây
+        setTimeout(() => { $cmdResult.textContent = ''; }, 4000);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Countdown + auto-refresh
+    // ══════════════════════════════════════════════════════
+    function resetCountdown() {
+      countdown = REFRESH_INTERVAL;
+      $countdown.textContent = countdown;
+      $ring.style.strokeDashoffset = '0';
+    }
+
+    function startCountdown() {
+      if (countdownInterval) clearInterval(countdownInterval);
+      countdownInterval = setInterval(() => {
+        countdown--;
+        $countdown.textContent = Math.max(0, countdown);
+
+        // Cập nhật ring (stroke-dashoffset tăng dần = xoay ngược chiều)
+        const progress = 1 - countdown / REFRESH_INTERVAL;
+        $ring.style.strokeDashoffset = (progress * CIRCUMFERENCE).toFixed(1);
+
+        if (countdown <= 0) {
+          resetCountdown();
+          fetchStatus();
+        }
+      }, 1000);
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Helpers
+    // ══════════════════════════════════════════════════════
+    function setButtonsDisabled(disabled) {
+      document.querySelectorAll('.mode-btn').forEach(b => b.disabled = disabled);
+    }
+
+    function showError(msg) {
+      $errorBanner.textContent = `⚠️ ${msg}`;
+      $errorBanner.classList.remove('hidden');
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  KHỞI ĐỘNG
+    // ══════════════════════════════════════════════════════
+    fetchStatus();
+    startCountdown();
+  </script>
+</body>
+</html>
