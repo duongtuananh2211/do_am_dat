@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>🌱 Hệ Thống Tưới Cây</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     /* ── Gradient nền ── */
     body { background: linear-gradient(135deg, #0f172a 0%, #134e4a 100%); min-height: 100vh; }
@@ -131,6 +132,11 @@
           </span>
         </div>
       </div>
+
+      <!-- Cảnh báo lỗi thiết bị (Field 4) -->
+      <div id="device-alert"
+           class="hidden mt-3 rounded-xl border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-300">
+      </div>
     </div>
 
     <!-- ══════════════════════════════════════════════════
@@ -158,7 +164,7 @@
                 onclick="setMode(1)">
           <span class="text-2xl">💧</span>
           <span class="text-sm font-semibold">Bật Bơm</span>
-          <span class="text-xs text-emerald-200">luôn chạy</span>
+          <span class="text-xs text-emerald-200">tối đa 5 phút</span>
         </button>
 
         <!-- Tắt bơm -->
@@ -176,12 +182,36 @@
     </div>
 
     <!-- ══════════════════════════════════════════════════
+         CARD: LỊCH SỬ
+    ══════════════════════════════════════════════════ -->
+    <div class="glass rounded-2xl p-5">
+      <div class="flex items-center justify-between mb-4 gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">📈</span>
+          <span class="font-semibold text-lg">Lịch Sử</span>
+        </div>
+        <select id="history-results"
+                class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-sm text-slate-200">
+          <option value="50">50 điểm</option>
+          <option value="100" selected>100 điểm</option>
+          <option value="300">300 điểm</option>
+          <option value="1000">1000 điểm</option>
+        </select>
+      </div>
+      <div class="relative h-64">
+        <canvas id="history-chart"></canvas>
+      </div>
+      <div id="history-msg" class="mt-2 text-xs text-slate-400 text-center"></div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
          FOOTER: THỜI GIAN & TỰ ĐỘNG LÀM MỚI
     ══════════════════════════════════════════════════ -->
     <div class="glass rounded-2xl p-4 flex items-center justify-between text-sm text-slate-400">
       <div>
         <span>🕐 Cập nhật lúc: </span>
         <span id="updated-at" class="text-slate-300">—</span>
+        <span id="stale-badge" class="hidden ml-1 text-amber-400">(ESP32 không gửi dữ liệu mới)</span>
       </div>
       <div class="flex items-center gap-2">
         <!-- SVG countdown ring -->
@@ -212,6 +242,12 @@
     // ── Cấu hình ──────────────────────────────────────────
     const REFRESH_INTERVAL = 15;   // giây — khớp với giới hạn ThingSpeak free
     const CIRCUMFERENCE = 2 * Math.PI * 11; // ≈ 69.1
+    const STALE_AFTER_MS = 90 * 1000;      // ESP32 gửi mỗi 20 s → > 90 s coi như offline
+    const MOISTURE_LOW = 30, MOISTURE_HIGH = 60; // khớp firmware
+    const ERROR_MESSAGES = {
+      1: '⚠️ Cảm biến độ ẩm lỗi (ADC ngoài dải hợp lệ — kiểm tra dây cảm biến). Chế độ tự động đang tắt bơm.',
+      2: '⚠️ Bơm chạy nhưng độ ẩm không tăng (hết nước / tắc ống?). Bơm đã tắt — kiểm tra rồi bấm một chế độ bất kỳ để xóa lỗi.',
+    };
 
     // ── State ──────────────────────────────────────────────
     let currentMode = 0;
@@ -231,6 +267,11 @@
     const $cmdResult     = document.getElementById('cmd-result');
     const $errorBanner   = document.getElementById('error-banner');
     const $buttons       = document.getElementById('mode-buttons');
+    const $deviceAlert   = document.getElementById('device-alert');
+    const $staleBadge    = document.getElementById('stale-badge');
+    const $historySel    = document.getElementById('history-results');
+    const $historyMsg    = document.getElementById('history-msg');
+    let historyChart     = null;
 
     // ══════════════════════════════════════════════════════
     //  Cập nhật giao diện từ dữ liệu API
@@ -290,6 +331,83 @@
       } else {
         $updatedAt.textContent = '—';
       }
+      const stale = !data.updatedAt || Date.now() - new Date(data.updatedAt).getTime() > STALE_AFTER_MS;
+      $staleBadge.classList.toggle('hidden', !stale || !data.updatedAt);
+
+      // ── Lỗi thiết bị (Field 4) ──
+      const errMsg = ERROR_MESSAGES[data.errorCode];
+      $deviceAlert.textContent = errMsg || '';
+      $deviceAlert.classList.toggle('hidden', !errMsg);
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Biểu đồ lịch sử độ ẩm + trạng thái bơm
+    // ══════════════════════════════════════════════════════
+    async function fetchHistory() {
+      if (typeof Chart === 'undefined') {
+        $historyMsg.textContent = 'Không tải được thư viện biểu đồ.';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/history?results=${$historySel.value}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const points = await res.json();
+        renderHistory(points);
+        $historyMsg.textContent = points.length ? '' : 'Chưa có dữ liệu.';
+      } catch (err) {
+        $historyMsg.textContent = 'Không đọc được lịch sử từ ThingSpeak.';
+      }
+    }
+
+    function renderHistory(points) {
+      const labels = points.map(p => new Date(p.time).toLocaleString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit',
+      }));
+      const datasets = [
+        {
+          label: 'Độ ẩm (%)', data: points.map(p => p.moisture), yAxisID: 'y',
+          borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.15)',
+          fill: true, tension: 0.25, pointRadius: 0, spanGaps: false,
+        },
+        {
+          label: 'Bơm (1 = chạy)', data: points.map(p => p.pump), yAxisID: 'y1',
+          borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.15)',
+          stepped: true, fill: true, pointRadius: 0,
+        },
+        {
+          label: `Ngưỡng bật ${MOISTURE_LOW}%`, data: points.map(() => MOISTURE_LOW), yAxisID: 'y',
+          borderColor: '#f87171', borderDash: [6, 4], borderWidth: 1, pointRadius: 0,
+        },
+        {
+          label: `Ngưỡng tắt ${MOISTURE_HIGH}%`, data: points.map(() => MOISTURE_HIGH), yAxisID: 'y',
+          borderColor: '#fbbf24', borderDash: [6, 4], borderWidth: 1, pointRadius: 0,
+        },
+      ];
+
+      if (historyChart) {
+        historyChart.data.labels = labels;
+        historyChart.data.datasets.forEach((ds, i) => { ds.data = datasets[i].data; });
+        historyChart.update('none');
+        return;
+      }
+
+      const grid = { color: 'rgba(148,163,184,0.15)' };
+      const ticks = { color: '#94a3b8' };
+      historyChart = new Chart(document.getElementById('history-chart'), {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { labels: { color: '#cbd5e1', boxWidth: 12 } } },
+          scales: {
+            x:  { ticks: { ...ticks, maxTicksLimit: 6, maxRotation: 0 }, grid },
+            y:  { min: 0, max: 100, ticks, grid, title: { display: true, text: '%', color: '#94a3b8' } },
+            y1: { min: 0, max: 1.2, position: 'right', grid: { drawOnChartArea: false },
+                  ticks: { ...ticks, stepSize: 1, callback: v => (v === 0 ? 'Tắt' : v === 1 ? 'Chạy' : '') } },
+          },
+        },
+      });
     }
 
     // ══════════════════════════════════════════════════════
@@ -305,6 +423,7 @@
           return;
         }
         updateUI(data);
+        fetchHistory();
       } catch (err) {
         showError('Không thể kết nối backend. Kiểm tra NestJS đang chạy.');
       }
@@ -334,7 +453,7 @@
           $cmdResult.innerHTML = `✅ ${data.message}`;
           $cmdResult.className = 'mt-3 text-sm text-center min-h-[1.5rem] text-emerald-400';
 
-          // Làm mới ngay sau 2 giây (chờ ESP32 ghi vào ThingSpeak)
+          // Làm mới sau 2 giây (ESP32 nhận lệnh trong ~5 s và báo lại trong ~15–20 s)
           setTimeout(() => {
             resetCountdown();
             fetchStatus();
@@ -397,6 +516,7 @@
     // ══════════════════════════════════════════════════════
     //  KHỞI ĐỘNG
     // ══════════════════════════════════════════════════════
+    $historySel.addEventListener('change', fetchHistory);
     fetchStatus();
     startCountdown();
   </script>

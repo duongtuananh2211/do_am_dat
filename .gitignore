@@ -8,3 +8,6 @@
 dashboard/node_modules
 dashboard/dist
 dashboard/.env
+
+# Secrets firmware (copy từ include/secrets.h.example)
+include/secrets.h

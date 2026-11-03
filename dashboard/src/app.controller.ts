@@ -5,7 +5,9 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  Query,
   BadRequestException,
+  BadGatewayException,
 } from '@nestjs/common';
 import { AppService, PumpMode } from './app.service';
 
@@ -24,6 +26,19 @@ export class AppController {
   @Get('status')
   getStatus() {
     return this.appService.getStatus();
+  }
+
+  // ----------------------------------------------------------
+  //  GET /api/history?results=N — N điểm gần nhất (1..8000, mặc định 100)
+  // ----------------------------------------------------------
+  @Get('history')
+  async getHistory(@Query('results') results?: string) {
+    const n = Math.min(8000, Math.max(1, parseInt(results ?? '100', 10) || 100));
+    try {
+      return await this.appService.getHistory(n);
+    } catch (err) {
+      throw new BadGatewayException(`Không đọc được lịch sử từ ThingSpeak: ${err.message}`);
+    }
   }
 
   // ----------------------------------------------------------
